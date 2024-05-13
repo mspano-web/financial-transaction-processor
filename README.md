@@ -27,6 +27,7 @@ ___
 
 * TypeScript
 * Nest.js
+* Microservices
 * Kafka
 * MongoDB
 
