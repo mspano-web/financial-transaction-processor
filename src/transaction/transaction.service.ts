@@ -5,7 +5,7 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { Observable, firstValueFrom } from 'rxjs';
+import { EmptyError, Observable, defaultIfEmpty, lastValueFrom } from 'rxjs';
 import { Producer, Consumer } from 'kafkajs';
 import { TransactionDto } from '../dto/transaction.dto';
 import { TransactionStatus } from '../types/results';
@@ -79,23 +79,49 @@ export class TransactionService {
     let createdTransaction: any = null;
 
     try {
-      //Failure testing with database service down.
       createdTransaction = await this.transactionModel.create(transaction);
 
       if (!createdTransaction || !createdTransaction.id) {
         throw new Error(
-          `Created transaction or its ID is undefined - id: 
+          `Created transaction or its ID is undefined - transaction id: 
           ${transaction.id}`,
         );
       }
 
-      // Failure testing with kafka service down.
-      await firstValueFrom(
+      await lastValueFrom(
         this.sendTransaction(
           KafkaTopics.START_TRANSACTIONS_CREDIT_CARD,
           transaction,
-        ),
-      );
+        ).pipe(defaultIfEmpty(null)),
+      ).catch((error) => {
+        if (error instanceof EmptyError) {
+          console.error(
+            'The event stream is empty - transaction id:',
+            transaction.id,
+          );
+        } else {
+          console.error(
+            'Error processing transaction id:',
+            transaction.id,
+            ' error: ',
+            error,
+          );
+        }
+        throw error;
+      });
+
+      await this.updateTransactionStatus(
+        createdTransaction.id,
+        TransactionStatus.IN_PROGRESS,
+      ).catch((updateError) => {
+        console.error(
+          'Failed to update transaction status to "in progress" - id:',
+          transaction.id,
+          ' error: ',
+          updateError,
+        );
+        throw updateError;
+      });
     } catch (error) {
       console.error(
         'Error processing transaction: ',
@@ -110,14 +136,14 @@ export class TransactionService {
           TransactionStatus.PENDING_RETRY,
         ).catch((updateError) => {
           console.error(
-            'Failed to update transaction status - id::',
+            'Failed to update transaction status - id:',
             transaction.id,
             ' error: ',
             updateError,
           );
         });
       } else {
-        console.error('Failed to create  transaction- id::', transaction.id);
+        console.error('Failed to create  transaction- id:', transaction.id);
       }
 
       throw new Error(error);
@@ -149,8 +175,34 @@ export class TransactionService {
   // ------------------------------------------------------
 
   async updateTransactionStatus(transactionId: string, status: string) {
+    const currentStatus = await this.getTransactionStatus(transactionId);
+    const allowedStatusUpdates = {
+      [TransactionStatus.IN_PROGRESS]: [
+        TransactionStatus.NEW,
+        TransactionStatus.PENDING_RETRY,
+      ],
+      [TransactionStatus.PENDING_RETRY]: [TransactionStatus.NEW],
+      [TransactionStatus.OK]: [TransactionStatus.IN_PROGRESS],
+      [TransactionStatus.FAILED]: [
+        TransactionStatus.IN_PROGRESS,
+        TransactionStatus.OK,
+      ],
+      [TransactionStatus.FAILED_INCONSISTENCE]: [
+        TransactionStatus.IN_PROGRESS,
+        TransactionStatus.FAILED,
+        TransactionStatus.OK,
+      ],
+    };
+
+    const canUpdate = allowedStatusUpdates[status]?.includes(currentStatus);
+
+    if (!canUpdate) {
+      throw new Error(
+        `Workflow failure: Cannot update status from ${currentStatus} to ${status} in transaction id ${transactionId}`,
+      );
+    }
+
     try {
-      // A control of status changes is missing in the workflow
       const updatedTransaction = await this.transactionModel.updateOne(
         { id: transactionId },
         { $set: { status: status } },
@@ -163,9 +215,27 @@ export class TransactionService {
       );
       return updatedTransaction;
     } catch (error) {
-      console.error('Error updating document status:', error);
+      console.error(
+        'Error updating document status - transaction id:',
+        transactionId,
+        ' error :',
+        error,
+      );
       throw error;
     }
+  }
+
+  // ------------------------------------------------------
+
+  async getTransactionStatus(transactionId: string): Promise<string> {
+    const transaction = await this.transactionModel.findOne(
+      { id: transactionId },
+      'status',
+    );
+    if (!transaction) {
+      throw new Error(`Transaction with id ${transactionId} not found`);
+    }
+    return transaction.status;
   }
 
   // ------------------------------------------------------
