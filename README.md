@@ -50,4 +50,5 @@ ___
 
 ## Documentacion de soporte / Support documentation
 
-* [Application Architecture Diagram](https://drive.google.com/file/d/1p7IXMbkwuWV7GKsDqXKn95jkTtVXdqWC/view?usp=drive_link) (Google Drive)
+* [Application Architecture Diagram](https://drive.google.com/file/d/1m-AsA6Ke27wzLe1TpvlunpNZ1n9yILJ8/view?) (Google Drive)
+
